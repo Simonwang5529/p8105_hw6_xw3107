@@ -1,0 +1,379 @@
+---
+title: "hw6"
+output: html_document
+date: "2025-11-30"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+library(tidyverse)
+library(janitor)
+library(broom)
+library(purrr)
+```
+
+## Problem 1
+```{r}
+homicides =
+  read_csv("homicide-data.csv") |>
+  clean_names()
+
+homicides = 
+  homicides |>
+  mutate(
+    city_state = str_c(city, ", ", state),
+    solved = disposition == "Closed by arrest",   # TRUE = solved, FALSE = not
+    victim_age = as.numeric(victim_age)
+  ) |>
+  # drop specified cities with missing
+  filter(
+    !(city_state %in% c(
+      "Dallas, TX",
+      "Phoenix, AZ",
+      "Kansas City, MO",
+      "Tulsa, AL"
+    ))
+  ) |>
+  # keep only white or black victims
+  filter(victim_race %in% c("White", "Black")) |>
+  # drop missing key variables
+  filter(
+    !is.na(victim_age),
+    !is.na(victim_sex),
+    !is.na(victim_race),
+    !is.na(solved)
+  )
+
+glimpse(homicides)
+```
+### Logistic regression for Baltimore, MD
+```{r}
+baltimore =
+  homicides |>
+  filter(city_state == "Baltimore, MD") |>
+  mutate(
+    victim_sex = fct_relevel(victim_sex, "Female"),  # Female as reference
+    victim_race = fct_relevel(victim_race, "White")  # optional, for clarity
+  )
+
+baltimore_fit =
+  glm(
+    solved ~ victim_age + victim_sex + victim_race,
+    data = baltimore,
+    family = binomial()
+  )
+
+# tidy output, exponentiated to get odds ratios and CIs
+baltimore_or =
+  baltimore_fit |>
+  tidy(exponentiate = TRUE, conf.int = TRUE)
+
+baltimore_or
+```
+
+```{r}
+# male victims vs female victims, holding age and race fixed
+baltimore_or_male =
+  baltimore_or |>
+  filter(term == "victim_sexMale") |>
+  select(term, estimate, conf.low, conf.high)
+
+baltimore_or_male
+```
+### Logistic regression for each city
+```{r}
+# fit glm within each city using a tidy purrr / list-column workflow
+city_results =
+  homicides |>
+  mutate(
+    victim_sex = fct_relevel(victim_sex, "Female"),
+    victim_race = fct_relevel(victim_race, "White")
+  ) |>
+  group_by(city_state) |>
+  nest() |>
+  mutate(
+    fit = map(
+      data,
+      ~ glm(
+          solved ~ victim_age + victim_sex + victim_race,
+          data = .x,
+          family = binomial()
+        )
+    ),
+    tidied = map(
+      fit,
+      ~ tidy(.x, exponentiate = TRUE, conf.int = TRUE)
+    )
+  ) |>
+  unnest(tidied) |>
+  # keep male vs female OR
+  filter(term == "victim_sexMale") |>
+  select(
+    city_state,
+    estimate,
+    conf.low,
+    conf.high
+  ) |>
+  ungroup()
+
+city_results
+```
+
+```{r fig.height = 12}
+city_results_plot_data =
+  city_results |>
+  mutate(
+    city_state = fct_reorder(city_state, estimate)
+  )
+
+ggplot(city_results_plot_data, aes(x = city_state, y = estimate)) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  geom_pointrange(
+    aes(
+      ymin = conf.low,
+      ymax = conf.high
+    )
+  ) +
+  coord_flip() +
+  labs(
+    x = "City",
+    y = "Adjusted odds ratio (Male vs Female)",
+    title = "Adjusted odds of homicide being solved\nMale vs female victims by city",
+    subtitle = "Logistic regression adjusted for victim age and race"
+  )
+```
+# Problem 2
+
+```{r}
+library(p8105.datasets)
+data("weather_df")
+weather_df = weather_df |> 
+  drop_na(tmax, tmin, prcp)  # ensure complete cases
+
+glimpse(weather_df)
+```
+
+```{r}
+set.seed(1130)
+
+boot_results =
+  tibble(id = 1:5000) |>
+  mutate(
+    boot_sample = map(
+      id,
+      ~ sample_n(weather_df, size = nrow(weather_df), replace = TRUE)
+    ),
+    boot_fit = map(
+      boot_sample,
+      ~ lm(tmax ~ tmin + prcp, data = .x)
+    ),
+    # Extract r^2
+    r_sq = map_dbl(boot_fit, ~ glance(.x)$r.squared),
+    # Extract beta1/beta2 ratio
+    coef_df = map(boot_fit, ~ tidy(.x)),
+    beta_ratio = map_dbl(
+      coef_df,
+      ~ {
+        b1 = .x |> filter(term == "tmin") |> pull(estimate)
+        b2 = .x |> filter(term == "prcp") |> pull(estimate)
+        b1 / b2
+      }
+    )
+  )
+```
+
+```{r}
+boot_results |> 
+  ggplot(aes(x = r_sq)) +
+  geom_histogram(bins = 40, color = "white") +
+  labs(
+    title = "Bootstrap Distribution of R-squared",
+    x = "r̂²",
+    y = "Count"
+  )
+```
+
+```{r}
+boot_results |> 
+  ggplot(aes(x = beta_ratio)) +
+  geom_histogram(bins = 40, color = "white") +
+  labs(
+    title = "Bootstrap Distribution of β̂1 / β̂2",
+    x = "β̂₁ / β̂₂",
+    y = "Count"
+  )
+```
+
+```{r}
+# CI for r^2
+ci_r2 =
+  quantile(boot_results$r_sq, probs = c(0.025, 0.975))
+
+# CI for beta1/beta2 ratio
+ci_ratio =
+  quantile(boot_results$beta_ratio, probs = c(0.025, 0.975))
+
+ci_r2
+ci_ratio
+```
+### **r̂²**
+
+The bootstrap distribution of r̂² is very narrow and centered near `r round(ci_r2[1], 4)`–`r round(ci_r2[2], 4)`, showing that model fit is extremely stable across samples.  
+The 95% CI (`r round(ci_r2[1], 4)`, `r round(ci_r2[2], 4)`) reflects high precision in estimating the explained variance.
+
+### **β̂₁ / β̂₂**
+
+The distribution of β̂₁/β̂₂ is extremely wide because the precipitation coefficient is often close to zero, making the ratio unstable.  
+This instability is reflected in the very large 95% CI (`r round(ci_ratio[1], 1)`, `r round(ci_ratio[2], 1)`).
+# Problem 3
+### Import and Clean
+```{r}
+library(modelr)
+# adjust path if needed, e.g. "data/birthweight.csv"
+birthweight_raw =
+  read_csv("birthweight.csv") |>
+  clean_names()
+
+# basic cleaning: factors, names, missingness
+birthweight_df =
+  birthweight_raw |>
+  mutate(
+    babysex = factor(babysex, levels = c(1, 2), labels = c("male", "female")),
+    malform = factor(malform, levels = c(0, 1), labels = c("absent", "present")),
+    mrace   = factor(mrace),
+    frace   = factor(frace)
+  )
+
+# check missing data
+birthweight_df |>
+  summarise(across(everything(), ~ sum(is.na(.))))
+```
+
+```{r}
+bw_for_reg =
+  birthweight_df |>
+  drop_na(
+    bwt, bhead, blength, gaweeks,
+    babysex, delwt, fincome, mrace,
+    ppbmi, smoken, wtgain
+  )
+
+glimpse(bw_for_reg)
+```
+Model idea: birthweight is primarily driven by gestational age and size at birth, with additional contributions from maternal size (pre-pregnancy BMI, delivery weight, weight gain), smoking, race, and income.
+```{r}
+mod_mine =
+  lm(
+    bwt ~ gaweeks + blength + bhead +
+      babysex + delwt + ppbmi + wtgain +
+      smoken + mrace + fincome,
+    data = bw_for_reg
+  )
+
+tidy(mod_mine)
+```
+
+```{r}
+bw_aug =
+  bw_for_reg |>
+  add_predictions(mod_mine) |>
+  add_residuals(mod_mine)
+
+ggplot(bw_aug, aes(x = pred, y = resid)) +
+  geom_point(alpha = 0.3) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_smooth(se = FALSE) +
+  labs(
+    x = "Fitted values",
+    y = "Residuals",
+    title = "Residuals vs fitted values for proposed birthweight model"
+  )
+```
+### Comparison
+```{r}
+mod_main =
+  lm(bwt ~ blength + gaweeks, data = bw_for_reg)
+
+mod_int =
+  lm(bwt ~ bhead * blength * babysex, data = bw_for_reg)
+# bhead * blength * babysex expands to all main effects + 2-way + 3-way interactions
+```
+
+```{r}
+set.seed(2025)
+
+cv_splits =
+  crossv_mc(bw_for_reg, n = 100, test = 0.2)
+```
+
+```{r}
+rmse_for_model = function(formula, train_df, test_df) {
+  fit = lm(formula, data = train_df)
+  preds = predict(fit, newdata = test_df)
+  sqrt(mean((test_df$bwt - preds)^2))
+}
+
+# build a long tibble of RMSEs across splits and models
+cv_long =
+  map_dfr(
+    .x = seq_len(nrow(cv_splits)),
+    .f = ~ {
+      train_df = as_tibble(cv_splits$train[[.x]])
+      test_df  = as_tibble(cv_splits$test[[.x]])
+
+      tibble(
+        split = .x,
+        model = c("Length + GA",
+                  "Head × Length × Sex (full int)",
+                  "Proposed model"),
+        rmse = c(
+          rmse_for_model(bwt ~ blength + gaweeks,
+                         train_df, test_df),
+          rmse_for_model(bwt ~ bhead * blength * babysex,
+                         train_df, test_df),
+          rmse_for_model(
+            bwt ~ gaweeks + blength + bhead +
+              babysex + delwt + ppbmi + wtgain +
+              smoken + mrace + fincome,
+            train_df, test_df
+          )
+        )
+      )
+    }
+  )
+```
+
+
+```{r}
+cv_long |>
+  group_by(model) |>
+  summarise(
+    mean_rmse = mean(rmse),
+    sd_rmse   = sd(rmse),
+    .groups = "drop"
+  )
+```
+
+```{r}
+cv_long =
+  cv_df |>
+  select(starts_with("rmse_")) |>
+  pivot_longer(
+    everything(),
+    names_to = "model",
+    values_to = "rmse"
+  ) |>
+  mutate(model = recode(model,
+                        rmse_main = "Length + GA",
+                        rmse_int  = "Head × Length × Sex (full int)",
+                        rmse_mine = "Proposed model"))
+
+cv_long |>
+  group_by(model) |>
+  summarise(
+    mean_rmse = mean(rmse),
+    sd_rmse   = sd(rmse)
+  )
+```
+Across the 100 Monte Carlo splits, the proposed model has the lowest mean RMSE (~273 g), indicating the best out-of-sample predictive performance among the three models. The interaction model using head circumference, length, and sex performs slightly worse (~289 g), and the simple model with only length and gestational age has the highest prediction error (~334 g), suggesting that omitting maternal and additional neonatal covariates substantially reduces predictive accuracy.
