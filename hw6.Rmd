@@ -1,6 +1,6 @@
 ---
 title: "hw6"
-output: html_document
+output: github_document
 date: "2025-11-30"
 ---
 
@@ -143,6 +143,9 @@ ggplot(city_results_plot_data, aes(x = city_state, y = estimate)) +
     subtitle = "Logistic regression adjusted for victim age and race"
   )
 ```
+This plot shows large city-to-city variation in the adjusted odds that a homicide is solved for male versus female victims, controlling for age and race. The dashed line marks no difference; most cities cluster near it, indicating similar clearance rates by sex. However, some cities (e.g., Albuquerque, Stockton, Fresno) show much higher odds for male victims, while a few show higher odds for female victims. Overall, the figure highlights substantial heterogeneity across jurisdictions.
+
+
 # Problem 2
 
 ```{r}
@@ -226,16 +229,18 @@ The 95% CI (`r round(ci_r2[1], 4)`, `r round(ci_r2[2], 4)`) reflects high precis
 
 The distribution of β̂₁/β̂₂ is extremely wide because the precipitation coefficient is often close to zero, making the ratio unstable.  
 This instability is reflected in the very large 95% CI (`r round(ci_ratio[1], 1)`, `r round(ci_ratio[2], 1)`).
+
+
 # Problem 3
 ### Import and Clean
 ```{r}
 library(modelr)
-# adjust path if needed, e.g. "data/birthweight.csv"
+
 birthweight_raw =
   read_csv("birthweight.csv") |>
   clean_names()
 
-# basic cleaning: factors, names, missingness
+# basic cleaning
 birthweight_df =
   birthweight_raw |>
   mutate(
@@ -261,7 +266,8 @@ bw_for_reg =
 
 glimpse(bw_for_reg)
 ```
-Model idea: birthweight is primarily driven by gestational age and size at birth, with additional contributions from maternal size (pre-pregnancy BMI, delivery weight, weight gain), smoking, race, and income.
+
+Model idea: birthweight is driven by gestational age and size at birth, with additional contributions from maternal size (pre-pregnancy BMI, delivery weight, weight gain), smoking, race, and income.
 ```{r}
 mod_mine =
   lm(
@@ -297,7 +303,7 @@ mod_main =
 
 mod_int =
   lm(bwt ~ bhead * blength * babysex, data = bw_for_reg)
-# bhead * blength * babysex expands to all main effects + 2-way + 3-way interactions
+
 ```
 
 ```{r}
@@ -355,25 +361,4 @@ cv_long |>
   )
 ```
 
-```{r}
-cv_long =
-  cv_df |>
-  select(starts_with("rmse_")) |>
-  pivot_longer(
-    everything(),
-    names_to = "model",
-    values_to = "rmse"
-  ) |>
-  mutate(model = recode(model,
-                        rmse_main = "Length + GA",
-                        rmse_int  = "Head × Length × Sex (full int)",
-                        rmse_mine = "Proposed model"))
-
-cv_long |>
-  group_by(model) |>
-  summarise(
-    mean_rmse = mean(rmse),
-    sd_rmse   = sd(rmse)
-  )
-```
 Across the 100 Monte Carlo splits, the proposed model has the lowest mean RMSE (~273 g), indicating the best out-of-sample predictive performance among the three models. The interaction model using head circumference, length, and sex performs slightly worse (~289 g), and the simple model with only length and gestational age has the highest prediction error (~334 g), suggesting that omitting maternal and additional neonatal covariates substantially reduces predictive accuracy.
